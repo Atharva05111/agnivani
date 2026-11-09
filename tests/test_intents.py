@@ -25,6 +25,25 @@ from app.texts import ANNOUNCEMENT, LANGUAGES, ZONE_NAMES, Num, announcement
     ("header pressure kitna hai", "pressure", None),
     ("पाण्याची टाकी किती भरली आहे", "tank", None),
     ("tell me a joke", "unknown", None),
+    # Commands in more natural phrasing
+    ("alarm ko band karo", "silence", None),
+    ("अलार्म को बंद करो", "silence", None),
+    ("turn off the siren", "silence", None),
+    # Negated or questioning phrases must never silence or reset
+    ("alarm band mat karo", "status", None),
+    ("अलार्म बंद करू नका", "status", None),
+    ("don't silence the alarm", "status", None),
+    ("do not reset", "status", None),
+    ("reset mat karo", "status", None),
+    ("alarm band hai kya", "status", None),
+    ("अलार्म बंद आहे का", "status", None),
+    ("is the alarm off", "status", None),
+    # Spoken zone numbers
+    ("zone two ka temperature", "temperature", "B"),
+    ("zone teen mein dhuan kitna hai", "smoke", "C"),
+    # Short keywords must not match inside longer words
+    ("hotel booking", "unknown", None),
+    ("send a message", "unknown", None),
 ])
 def test_parse(text, intent, zone):
     got = parse(text)

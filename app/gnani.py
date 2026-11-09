@@ -7,11 +7,15 @@ Docs: https://docs.gnani.ai/api/introduction/quick-start
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
 
 log = logging.getLogger("agnivani.gnani")
+
+RETRYABLE_STATUS = {429, 502, 503, 504}
+MAX_RETRY_WAIT = 10.0
 
 
 class GnaniError(RuntimeError):
@@ -41,12 +45,43 @@ class GnaniClient:
         tts_model: str = "timbre-v2.5",
         stt_model: str = "prisma-v3.0",
         timeout: float = 60.0,
+        max_retries: int = 4,
+        retry_delay: float = 0.5,
     ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.tts_model = tts_model
         self.stt_model = stt_model
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
         self._http = httpx.AsyncClient(timeout=timeout)
+        # Gnani keys may allow only one active request, so calls run one at a time.
+        self._gate = asyncio.Semaphore(1)
+
+    async def _post(self, url: str, **kwargs) -> httpx.Response:
+        """POST one request at a time, retrying rate limits and brief outages."""
+        async with self._gate:
+            for attempt in range(self.max_retries + 1):
+                last = attempt == self.max_retries
+                wait = self.retry_delay * 2 ** attempt
+                try:
+                    resp = await self._http.post(url, **kwargs)
+                except httpx.TimeoutException as exc:
+                    raise GnaniError(f"Gnani request timed out ({type(exc).__name__})") from exc
+                except httpx.HTTPError as exc:
+                    if last:
+                        raise GnaniError(f"Could not reach Gnani ({type(exc).__name__}): {exc}") from exc
+                    log.warning("Gnani connection failed (%s); retrying in %.1fs", type(exc).__name__, wait)
+                else:
+                    if resp.status_code not in RETRYABLE_STATUS or last:
+                        return resp
+                    try:
+                        wait = float(resp.headers.get("retry-after", wait))
+                    except ValueError:
+                        pass
+                    log.warning("Gnani returned %s; retrying in %.1fs", resp.status_code, wait)
+                await asyncio.sleep(min(wait, MAX_RETRY_WAIT))
+        raise AssertionError("unreachable")
 
     @property
     def configured(self) -> bool:
@@ -84,7 +119,7 @@ class GnaniClient:
                 "container": "wav",
             },
         }
-        resp = await self._http.post(
+        resp = await self._post(
             f"{self.base_url}/api/v1/tts/inference",
             headers={**self._headers(), "Content-Type": "application/json"},
             json=body,
@@ -99,7 +134,7 @@ class GnaniClient:
     # ------------------------------------------------------- Voice cloning
     async def clone_embedding(self, audio: bytes, filename: str = "reference.wav") -> dict:
         """Upload 5-30 s of clear speech, get back a speaker embedding dict."""
-        resp = await self._http.post(
+        resp = await self._post(
             f"{self.base_url}/api/v1/tts/voice-clone/embeddings",
             headers=self._headers(),
             files={"audio_file": (filename, audio, "audio/wav")},
@@ -125,7 +160,7 @@ class GnaniClient:
             },
             "speaker_embedding": speaker_embedding,
         }
-        resp = await self._http.post(
+        resp = await self._post(
             f"{self.base_url}/api/v1/tts/inference",
             headers={**self._headers(), "Content-Type": "application/json"},
             json=body,
@@ -153,7 +188,7 @@ class GnaniClient:
         try:
             return await self._stt_once(audio, filename, self.stt_model, language_code)
         except GnaniError as exc:
-            if self.stt_model == "prisma-v2.5" or (exc.status is not None and exc.status in (401, 403) and "scope" in str(exc).lower()):
+            if self.stt_model == "prisma-v2.5" or exc.status == 429 or (exc.status in (401, 403) and "scope" in str(exc).lower()):
                 raise
             log.warning("Prisma %s failed (%s); retrying with prisma-v2.5", self.stt_model, exc)
             return await self._stt_once(audio, filename, "prisma-v2.5", fallback_language)
@@ -162,7 +197,7 @@ class GnaniClient:
         data = {"language_code": language_code}
         if model != "prisma-v2.5":
             data["model"] = model
-        resp = await self._http.post(
+        resp = await self._post(
             f"{self.base_url}/stt/v3",
             headers=self._headers(),
             files={"audio_file": (filename, audio, "audio/wav")},

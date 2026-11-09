@@ -24,10 +24,15 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+# Short keywords that must match a whole word ("hot" is not "hotel", "mess" is not "message").
+WHOLE_WORD = {"hot", "temp", "bar", "mess", "kis"}
+
+
 def _has(text: str, words) -> bool:
     for w in words:
         if w.isascii():
-            if re.search(rf"\b{re.escape(w)}", text):
+            end = r"\b" if w in WHOLE_WORD else ""
+            if re.search(rf"\b{re.escape(w)}{end}", text):
                 return True
         elif w in text:
             return True
@@ -69,17 +74,22 @@ ZONE_WORDS = {
     "C": ("server", "सर्वर", "सर्व्हर", "data centre", "data center"),
     "D": ("canteen", "कैंटीन", "कॅन्टीन", "कैन्टीन", "केंटीन", "cafeteria", "mess"),
 }
-ZONE_LETTER = re.compile(r"(?:zone|jone|जोन|झोन|ज़ोन)\s*(a|b|c|d|ए|बी|सी|डी|एक|दो|दोन|तीन|चार|1|2|3|4)(?=\s|$)")
+ZONE_LETTER = re.compile(r"(?:zone|jone|जोन|झोन|ज़ोन)\s*(a|b|c|d|ए|बी|सी|डी|एक|दो|दोन|तीन|चार|1|2|3|4"
+                         r"|one|two|three|four|ek|do|don|teen|char)(?=\s|$)")
 LETTER_MAP = {"a": "A", "b": "B", "c": "C", "d": "D", "ए": "A", "बी": "B", "सी": "C", "डी": "D",
-              "1": "A", "2": "B", "3": "C", "4": "D", "एक": "A", "दो": "B", "दोन": "B", "तीन": "C", "चार": "D"}
+              "1": "A", "2": "B", "3": "C", "4": "D", "एक": "A", "दो": "B", "दोन": "B", "तीन": "C", "चार": "D",
+              "one": "A", "two": "B", "three": "C", "four": "D", "ek": "A", "do": "B", "don": "B", "teen": "C", "char": "D"}
 
 SILENCE = ("silence", "mute", "acknowledge", "alarm band", "alarm bandh", "alarm off", "siren band", "siren off",
-           "अलार्म बंद", "सायरन बंद", "सायरन बन्द", "अलार्म बन्द", "stop alarm", "stop the alarm")
+           "अलार्म बंद", "सायरन बंद", "सायरन बन्द", "अलार्म बन्द", "stop alarm", "stop the alarm",
+           "stop siren", "stop the siren", "turn off alarm", "turn off the alarm", "turn off siren", "turn off the siren",
+           "switch off alarm", "switch off the alarm", "switch off siren", "switch off the siren",
+           "alarm ko band", "siren ko band", "अलार्म को बंद", "सायरन को बंद")
 RESET = ("reset", "रीसेट", "रिसेट", "all clear", "ऑल क्लियर")
 FIRE = ("fire", "aag", "आग", "फायर", "flame", "blaze")
 WHERE = ("where", "which zone", "kahan", "kahaan", "kidhar", "kuthe", "कहां", "किधर", "कुठे", "कोणत्या", "किस")
 EVAC = ("exit", "evacuat", "escape", "way out", "bahar", "baher", "बाहर", "बाहेर", "nikle", "nikal", "निकल",
-        "रास्ता", "raasta", "rasta", "मार्ग", "marg", "route", "एग्जिट", "एक्झिट", "पड")
+        "रास्ता", "raasta", "rasta", "मार्ग", "marg", "route", "एग्जिट", "एक्झिट", "पडाय", "पडू")
 TEMP = ("temperature", "temp", "तापमान", "टेम्परेचर", "टेंपरेचर", "टेम्प्रेचर", "टेम्पेरेचर", "garmi", "गर्मी", "heat", "hot", "taapman", "tapman")
 SMOKE = ("smoke", "धुआं", "धुंआ", "धुआ", "धुएं", "dhuan", "dhuaan", "dhua", "धूर", "dhur", "स्मोक")
 PUMP = ("pump", "पंप", "पम्प", "jockey", "जॉकी")
@@ -87,6 +97,20 @@ PRESSURE = ("pressure", "प्रेशर", "दबाव", "दाब", "daba
 TANK = ("tank", "टैंक", "टंकी", "टाकी", "water", "पानी", "पाणी", "paani", "pani")
 STATUS = ("status", "स्थिति", "स्थिती", "halat", "हालत", "situation", "report", "रिपोर्ट", "update", "अपडेट",
           "sab theek", "sab thik", "सब ठीक", "सगळं ठीक", "everything", "overall", "kaisa", "कैसा", "कसं", "kasa")
+
+# Silence and reset change the alarm, so they run only on a plain command.
+NEGATIONS = {"mat", "मत", "nako", "नको", "naka", "नका", "dont", "not", "never", "nahi", "nahin", "नहीं", "नाही"}
+QUESTION_ANYWHERE = {"kya", "क्या", "kyu", "kyun", "क्यों", "kab", "कब", "why", "when"}
+QUESTION_FIRST = {"is", "was", "did", "has", "how"}
+QUESTION_LAST = {"ka", "का", "hai", "है", "ahe", "aahe", "आहे", "hua", "हुआ", "zala", "झाला"}
+
+
+def _is_command(t: str) -> bool:
+    """False when the words negate the action or ask about it instead of ordering it."""
+    tokens = t.split()
+    if "don t" in t or NEGATIONS.intersection(tokens) or QUESTION_ANYWHERE.intersection(tokens):
+        return False
+    return not tokens or (tokens[0] not in QUESTION_FIRST and tokens[-1] not in QUESTION_LAST)
 
 
 @dataclass
@@ -108,10 +132,10 @@ def find_zone(t: str) -> str | None:
 def parse(text: str) -> Intent:
     t = normalize(text)
     zone = find_zone(t)
-    if _has(t, RESET):
-        return Intent("reset")
-    if _has(t, SILENCE):
-        return Intent("silence")
+    if _has(t, RESET) or _has(t, SILENCE):
+        if not _is_command(t):
+            return Intent("status", zone)  # report the state, change nothing
+        return Intent("reset" if _has(t, RESET) else "silence")
     if _has(t, EVAC) and not _has(t, TEMP + SMOKE + PUMP):
         return Intent("evacuate", zone)
     if _has(t, TEMP):
