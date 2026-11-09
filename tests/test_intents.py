@@ -38,6 +38,35 @@ from app.texts import ANNOUNCEMENT, LANGUAGES, ZONE_NAMES, Num, announcement
     ("alarm band hai kya", "status", None),
     ("अलार्म बंद आहे का", "status", None),
     ("is the alarm off", "status", None),
+    # Questions and past-tense reports must not act either
+    ("who silenced the alarm", "status", None),
+    ("should I reset the alarm", "status", None),
+    ("alarm band ho gaya", "status", None),
+    ("reset zala ka", "status", None),
+    # A reset clears a live alarm, so it needs a plain command
+    ("reset password", "status", None),
+    ("system रीसेट करा", "reset", None),
+    # Mixed-script and misheard transcripts seen from Prisma
+    ("अलार्म band mat कर", "status", None),
+    ("alarm बंद करू नका", "status", None),
+    ("अलार्म band mute करो", "status", None),
+    ("अलार्म बैंड मैट करो", "status", None),
+    ("अलार्म बैंड का रो", "silence", None),
+    ("canteenमधून बाहेर कसं पडायचं", "evacuate", "D"),
+    # More natural commands
+    ("shut off the alarm", "silence", None),
+    ("turn the siren off", "silence", None),
+    ("भोंगा बंद करा", "silence", None),
+    ("mute the alarm", "silence", None),
+    # Keywords must not match inside longer words
+    ("firefighter training schedule", "unknown", None),
+    ("marginal cost", "unknown", None),
+    ("waterfall", "unknown", None),
+    # Paraphrases
+    ("how do I get out of the warehouse", "evacuate", "B"),
+    ("assembly point kahan hai", "evacuate", None),
+    ("zone bee temperature", "temperature", "B"),
+    ("sab normal hai kya", "status", None),
     # Spoken zone numbers
     ("zone two ka temperature", "temperature", "B"),
     ("zone teen mein dhuan kitna hai", "smoke", "C"),
@@ -57,6 +86,16 @@ def test_parse(text, intent, zone):
     ("ज़ोन बी का तापमान कितना है?", None, "hi-IN"),
     ("What's the smoke level in the server room?", "en-IN", "en-IN"),
     ("सिस्टम रीसेट", "mr-IN", "mr-IN"),
+    # Prisma tags Marathi as hi-IN from the script, so the words must win
+    ("कॅन्टीनमधून बाहेर कसं पडायचं?", "hi-IN", "mr-IN"),
+    ("अलार्म बंद करा", "hi-IN", "mr-IN"),
+    ("alarm बंद करू नका", "hi-IN", "mr-IN"),
+    ("alarm band kar do", None, "hi-IN"),
+    ("reset zala ka", None, "mr-IN"),
+    ("zone 2 ka temperature", None, "hi-IN"),
+    # English words that merely start like Hindi or Marathi markers
+    ("go ahead with the karaoke", None, "en-IN"),
+    ("Tell me about the kay", None, "en-IN"),
 ])
 def test_language(text, detected, lang):
     assert detect_language(text, detected) == lang

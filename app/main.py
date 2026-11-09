@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .gnani import GnaniClient, GnaniError
-from .intents import answer, detect_language, parse
+from .intents import STT_FORMAT, STT_KEYTERMS, STT_LANGUAGES, answer, detect_language, parse
 from .plant import Plant
 from .texts import CONVERSATION_LANGS, LANGUAGES, announcement
 
@@ -31,6 +31,8 @@ log = logging.getLogger("agnivani")
 
 DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
+TTS_CACHE = DATA_DIR / "tts"
+TTS_CACHE.mkdir(exist_ok=True)
 OFFICER_FILE = DATA_DIR / "officer_voice.json"
 EVENT_TOKEN = os.getenv("EVENT_TOKEN", "")
 
@@ -74,17 +76,29 @@ def _store(data: bytes) -> str:
     return aid
 
 
-async def speak(text: str, lang: str, officer: bool = False) -> tuple[str, str]:
-    """Synthesize text, returning (audio_id, voice_label). Cached by voice+text."""
+async def speak(text: str, lang: str, officer: bool = False, persist: bool = False) -> tuple[str, str]:
+    """Synthesize text, returning (audio_id, voice_label). Cached by voice+text.
+
+    With persist, the audio is also kept on disk so announcements survive a
+    restart and an alarm never waits on the network for a phrase already made.
+    """
     voice = "officer" if officer else VOICES[lang]
-    key = hashlib.sha1(f"{voice}|{lang}|{text}".encode()).hexdigest()
+    # A re-recorded officer voice must not reuse audio from the previous recording.
+    speaker = hashlib.sha1(json.dumps(state.officer_embedding, sort_keys=True).encode()).hexdigest() if officer else voice
+    key = hashlib.sha1(f"{gnani.tts_model}|{speaker}|{lang}|{text}".encode()).hexdigest()
     aid = _audio_keys.get(key)
     if aid and aid in _audio:
         return aid, voice
-    if officer:
-        data = await gnani.tts_cloned(text, state.officer_embedding)
+    path = TTS_CACHE / f"{key}.wav"
+    if persist and path.exists():
+        data = path.read_bytes()
     else:
-        data = await gnani.tts(text, VOICES[lang], lang)
+        if officer:
+            data = await gnani.tts_cloned(text, state.officer_embedding)
+        else:
+            data = await gnani.tts(text, VOICES[lang], lang)
+        if persist:
+            path.write_bytes(data)
     aid = _store(data)
     _audio_keys[key] = aid
     return aid, voice
@@ -103,12 +117,12 @@ async def build_announcements(alarm_id: int, zone_id: str) -> None:
     async def one(lang: str) -> None:
         entry = state.announcements[lang]
         try:
-            entry["audio"], entry["voice"] = await speak(entry["text"], lang, officer=use_officer)
+            entry["audio"], entry["voice"] = await speak(entry["text"], lang, officer=use_officer, persist=True)
         except GnaniError as exc:
             if use_officer:
                 log.warning("Officer voice failed for %s (%s); using Timbre", lang, exc)
                 try:
-                    entry["audio"], entry["voice"] = await speak(entry["text"], lang)
+                    entry["audio"], entry["voice"] = await speak(entry["text"], lang, persist=True)
                     return
                 except GnaniError as exc2:
                     exc = exc2
@@ -116,6 +130,31 @@ async def build_announcements(alarm_id: int, zone_id: str) -> None:
             log.error("Announcement TTS failed for %s: %s", lang, exc)
 
     await asyncio.gather(*(one(lang) for lang in langs))
+
+
+async def prewarm_announcements() -> None:
+    """Make every zone's announcement ahead of time, so an alarm speaks at once.
+
+    Runs one phrase at a time, so a live question waits for at most one of them.
+    """
+    use_officer = state.voice_mode == "officer" and state.officer_embedding is not None
+    try:
+        for zone in plant.zones.values():
+            for lang in list(state.shift_langs):
+                await speak(announcement(lang, zone.id, zone.exit_no), lang, officer=use_officer, persist=True)
+    except GnaniError as exc:
+        log.warning("Could not prepare announcements ahead of time: %s", exc)
+
+
+_prewarm_task: asyncio.Task | None = None
+
+
+def schedule_prewarm() -> None:
+    global _prewarm_task
+    if _prewarm_task:
+        _prewarm_task.cancel()
+    if gnani.configured:
+        _prewarm_task = asyncio.create_task(prewarm_announcements())
 
 
 def on_new_alarm() -> None:
@@ -135,8 +174,11 @@ async def lifespan(_: FastAPI):
     task = asyncio.create_task(ticker())
     if not gnani.configured:
         log.warning("GNANI_API_KEY is missing. Copy .env.example to .env and add your key.")
+    schedule_prewarm()
     yield
     task.cancel()
+    if _prewarm_task:
+        _prewarm_task.cancel()
     await gnani.close()
 
 
@@ -258,6 +300,7 @@ async def update_settings(s: Settings):
         state.voice_mode = "officer" if s.voice_mode == "officer" else "timbre"
     if plant.alarm:  # regenerate live announcements with the new settings
         await build_announcements(plant.alarm.id, plant.alarm.zone)
+    schedule_prewarm()
     return {"ok": True}
 
 
@@ -272,6 +315,7 @@ async def officer_voice(audio: UploadFile = File(...)):
         raise HTTPException(502, str(exc)) from exc
     OFFICER_FILE.write_text(json.dumps(state.officer_embedding))
     state.voice_mode = "officer"
+    schedule_prewarm()
     preview_text = "कृपया लक्ष द्या. ही अग्निवाणी प्रणालीची चाचणी आहे."
     preview, error = None, None
     try:
@@ -320,7 +364,7 @@ async def ask_audio(audio: UploadFile = File(...), lang: str | None = Form(defau
     if len(data) < 16000:  # ~0.5 s of 16 kHz PCM
         raise HTTPException(400, "That recording was too short. Hold the button and speak your question.")
     try:
-        stt = await gnani.stt(data, audio.filename or "speech.wav")
+        stt = await gnani.stt(data, audio.filename or "speech.wav", language_code=STT_LANGUAGES, fmt=STT_FORMAT, keyterms=STT_KEYTERMS)
     except GnaniError as exc:
         raise HTTPException(502, str(exc)) from exc
     if not stt["transcript"]:

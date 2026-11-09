@@ -11,15 +11,15 @@ from dataclasses import dataclass
 
 # code -> (display name in its own script, English name, default Timbre v2.5 voice)
 LANGUAGES: dict[str, tuple[str, str, str]] = {
-    "mr-IN": ("मराठी", "Marathi", "Zahira"),
-    "hi-IN": ("हिंदी", "Hindi", "Nalini"),
+    "mr-IN": ("मराठी", "Marathi", "Ishaan"),
+    "hi-IN": ("हिंदी", "Hindi", "Urmila"),
     "en-IN": ("English", "English", "Kaveri"),
     "gu-IN": ("ગુજરાતી", "Gujarati", "Falak"),
     "bn-IN": ("বাংলা", "Bengali", "Kirra"),
-    "pa-IN": ("ਪੰਜਾਬੀ", "Punjabi", "Mehuli"),
+    "pa-IN": ("ਪੰਜਾਬੀ", "Punjabi", "Zayan"),
     "ta-IN": ("தமிழ்", "Tamil", "Asmita"),
     "te-IN": ("తెలుగు", "Telugu", "Suhana"),
-    "kn-IN": ("ಕನ್ನಡ", "Kannada", "Saanvi"),
+    "kn-IN": ("ಕನ್ನಡ", "Kannada", "Kavin"),
     "ml-IN": ("മലയാളം", "Malayalam", "Reshma"),
 }
 

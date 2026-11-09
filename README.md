@@ -11,7 +11,7 @@ AgniVani (अग्निवाणी, "voice of fire") adds a multilingual voic
 
 | Model | Endpoint | Used for |
 |---|---|---|
-| Prisma v3.0 speech-to-text (falls back to v2.5) | `POST /stt/v3` with `language_code=indic-auto` | Transcribing operator questions, including code-mixed speech, with automatic language detection |
+| Prisma v3.0 speech-to-text (falls back to v2.5) | `POST /stt/v3` with `language_code=hi-IN,mr-IN,en-IN`, `format=codemix` and plant `keyterms` | Transcribing operator questions, including code-mixed speech |
 | Timbre v2.5 text-to-speech | `POST /api/v1/tts/inference` | Evacuation announcements in 10 Indian languages and spoken replies |
 | Voice cloning (`vachana-vc-v1`) | `POST /api/v1/tts/voice-clone/embeddings` + inference | Announcements in the safety officer's voice |
 
@@ -65,7 +65,7 @@ detector / drill ──> alarm ──> announcement per shift language ──> T
 - `app/plant.py` — simulated zones and pump room; replace with a live feed in production.
 - `static/` — the dashboard (plain HTML, CSS and JavaScript, no build step).
 
-Run the tests with `python -m pytest`.
+Run the tests with `python -m pytest`. `python scripts/eval_pipeline.py` measures the full speech path (Timbre, Prisma, intent engine) on clean and noisy audio; it uses API credits, and `--offline` re-scores saved transcripts for free.
 
 ## Language notes
 

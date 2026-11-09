@@ -8,13 +8,14 @@ Docs: https://docs.gnani.ai/api/introduction/quick-start
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import httpx
 
 log = logging.getLogger("agnivani.gnani")
 
-RETRYABLE_STATUS = {429, 502, 503, 504}
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_RETRY_WAIT = 10.0
 
 
@@ -141,9 +142,10 @@ class GnaniClient:
         )
         if resp.status_code != 200:
             raise GnaniError(f"Voice clone embedding failed ({resp.status_code}): {_error_text(resp)}", resp.status_code)
-        data = resp.json()
+        body = resp.json()
+        data = (body.get("data") or {}).get("voice_clone_embedding") or body  # nested in the current API
         if not data.get("embedding"):
-            raise GnaniError(f"Voice clone returned no embedding: {str(data)[:200]}")
+            raise GnaniError(f"Voice clone returned no embedding: {str(body)[:200]}")
         return {"embedding": data["embedding"], "shape": data.get("shape", [1, 768]), "dtype": data.get("dtype", "torch.bfloat16")}
 
     async def tts_cloned(self, text: str, speaker_embedding: dict, sample_rate: int = 44100) -> bytes:
@@ -178,25 +180,39 @@ class GnaniClient:
         filename: str = "speech.wav",
         language_code: str = "indic-auto",
         fallback_language: str = "hi-IN",
+        fmt: str | None = None,
+        keyterms: list[str] | None = None,
     ) -> dict:
         """Transcribe a short clip. Returns {'transcript', 'language', 'model'}.
 
-        Tries Prisma v3.0 with automatic language detection first. If that is
-        rejected (for example the key is not enabled for v3.0), it falls back
-        to Prisma v2.5 with a fixed language hint.
+        Tries the configured Prisma model first. If that is rejected (for
+        example the key is not enabled for v3.0), it falls back to Prisma v2.5
+        with a fixed language hint. Auth, credit and rate errors are final.
         """
         try:
-            return await self._stt_once(audio, filename, self.stt_model, language_code)
+            return await self._stt_once(audio, filename, self.stt_model, language_code, fmt, keyterms)
         except GnaniError as exc:
-            if self.stt_model == "prisma-v2.5" or exc.status == 429 or (exc.status in (401, 403) and "scope" in str(exc).lower()):
+            if self.stt_model == "prisma-v2.5" or exc.status in (402, 429) or (exc.status in (401, 403) and "scope" in str(exc).lower()):
                 raise
             log.warning("Prisma %s failed (%s); retrying with prisma-v2.5", self.stt_model, exc)
             return await self._stt_once(audio, filename, "prisma-v2.5", fallback_language)
 
-    async def _stt_once(self, audio: bytes, filename: str, model: str, language_code: str) -> dict:
+    async def _stt_once(
+        self,
+        audio: bytes,
+        filename: str,
+        model: str,
+        language_code: str,
+        fmt: str | None = None,
+        keyterms: list[str] | None = None,
+    ) -> dict:
         data = {"language_code": language_code}
-        if model != "prisma-v2.5":
+        if model != "prisma-v2.5":  # v2.5 is the API default and has no codemix or keyterms
             data["model"] = model
+            if fmt:
+                data["format"] = fmt
+            if keyterms:
+                data["keyterms"] = json.dumps(keyterms, ensure_ascii=False)
         resp = await self._post(
             f"{self.base_url}/stt/v3",
             headers=self._headers(),
@@ -210,6 +226,6 @@ class GnaniClient:
             raise GnaniError(f"Prisma STT error: {_error_text(resp)}")
         return {
             "transcript": (payload.get("transcript") or "").strip(),
-            "language": payload.get("detected_language_code") or (language_code if language_code != "indic-auto" else None),
+            "language": payload.get("detected_language_code") or (language_code if "," not in language_code and language_code != "indic-auto" else None),
             "model": payload.get("model", model),
         }

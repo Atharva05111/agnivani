@@ -109,3 +109,58 @@ def test_network_failures_become_gnani_errors(error):
 
     with pytest.raises(GnaniError):
         asyncio.run(run())
+
+
+def stt_request_body(**kwargs) -> bytes:
+    seen = {}
+
+    async def handler(request):
+        seen["body"] = request.content
+        return httpx.Response(200, json={"success": True, "transcript": "x", "model": "prisma-v3.0"})
+
+    async def run():
+        client = client_with(handler)
+        await client.stt(b"RIFF", **kwargs)
+        await client.close()
+
+    asyncio.run(run())
+    return seen["body"]
+
+
+def test_stt_sends_hints_format_and_keyterms():
+    body = stt_request_body(language_code="hi-IN,mr-IN", fmt="codemix", keyterms=["अलार्म"]).decode()
+    assert "hi-IN,mr-IN" in body and "codemix" in body and "अलार्म" in body
+
+
+def test_out_of_credit_does_not_fall_back():
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(402, json={"message": "no credit"})
+
+    async def run():
+        client = client_with(handler)
+        try:
+            await client.stt(b"RIFF")
+        finally:
+            await client.close()
+
+    with pytest.raises(GnaniError, match="402"):
+        asyncio.run(run())
+    assert calls == 1
+
+
+def test_clone_embedding_reads_nested_response():
+    async def handler(request):
+        inner = {"embedding": "AAAI", "shape": [1, 192], "dtype": "torch.float32"}
+        return httpx.Response(200, json={"success": True, "data": {"voice_clone_embedding": inner}})
+
+    async def run():
+        client = client_with(handler)
+        result = await client.clone_embedding(b"RIFF")
+        await client.close()
+        return result
+
+    assert asyncio.run(run()) == {"embedding": "AAAI", "shape": [1, 192], "dtype": "torch.float32"}
